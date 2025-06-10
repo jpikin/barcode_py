@@ -80,7 +80,7 @@ def create_template(barcode_image_path, article, name, unit):
               fill="black",
               font=ImageFont.truetype(font_type, size=100))
 
-    # Штрих-код снизу справа
+    # Штрих-код снизу слева
     bc_img = PilImage.open(barcode_image_path)
     scale_factor = 1.5
     new_bc_size = (int(bc_img.width * scale_factor), bc_img.height)
@@ -88,43 +88,23 @@ def create_template(barcode_image_path, article, name, unit):
     position_x = 20
     position_y = img.height - resized_bc.height - 10
     img.paste(resized_bc, (position_x, position_y))
-
     template_filename = f'template_{counter}.png'
     img.save(template_filename)
     return template_filename
 
 
-def rotateImg(img):
-    image = PilImage.open(img)
-    rotated_image = image.rotate(90, expand=True)
-    return rotated_image
-
-
 def save_images_to_pdf(image_paths, output_pdf_path):
-    pdf_doc = SimpleDocTemplate(output_pdf_path)
+    page_width = 1380  # Надо поработать с размерами
+    page_height = 780   # Надо поработать с размерами
+
+    doc = SimpleDocTemplate(output_pdf_path, pagesize=(page_width, page_height))  # Задание нужного размера страницы
     elements = []
 
     for path in image_paths:
-        # Получаем реальные размеры изображения
-        im_reader = ImageReader(path)
-        original_width, original_height = im_reader.getSize()
+        img = RlImage(path, width=img_width_px, height=img_height_px)
+        elements.append(img)
 
-        # Определяем ориентацию страницы на основе соотношения сторон изображения
-        if original_width > original_height:
-            # Горизонтальная ориентация (landscape)
-            custom_page_size = (original_width, original_height)
-        else:
-            # Вертикальная ориентация (portrait)
-            custom_page_size = (original_height, original_width)
-
-        # Добавляем изображение с его исходными размерами
-        elements.append(RlImage(path, width=original_width, height=original_height))
-
-        # Переход на новую страницу
-        elements.append(PageBreak())
-
-    # Формируем PDF-документ
-    pdf_doc.build(elements)
+    doc.build(elements)
 
 
 def on_generate_click():
