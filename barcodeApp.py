@@ -1,29 +1,31 @@
+import os
+import tempfile
+import tkinter as tk
+from tkinter import messagebox, filedialog
 from barcode import Code128
 from barcode.writer import ImageWriter
-from PIL import Image, ImageDraw, ImageFont
-import tkinter as tk
-from tkinter import messagebox
+from PIL import Image as PilImage
+from PIL import ImageDraw, ImageFont
+import pandas as pd
+from reportlab.lib.units import cm
+from reportlab.lib.pagesizes import inch, landscape, letter
+from reportlab.lib.utils import ImageReader
+from reportlab.platypus import SimpleDocTemplate, Image as RlImage, PageBreak
 
 counter = 0
 
 # Настройки шрифта и размеров
-font_size = 18
-font_type = "arial.ttf"  # Можно выбрать другой шрифт, если он установлен на вашей системе
+font_size = 40
+font_type = "arial.ttf"
 img_width_cm = 10
 img_height_cm = 5
-dpi = 300  # Чем больше DPI, тем лучше качество изображения
-
-# Конвертируем сантиметры в пиксели
-px_per_inch = dpi / 2.54  # Пикселей на дюйм
+dpi = 300
+px_per_inch = dpi / 2.54
 img_width_px = int(img_width_cm * px_per_inch)
 img_height_px = int(img_height_cm * px_per_inch)
 
 
 def generate_barcode(code_number):
-    """
-    Генерирует штрих-код формата Code128.
-    Возвращает путь к файлу изображения штрих-кода.
-    """
     global counter
     ean = Code128(str(code_number), writer=ImageWriter())
     filename = f'barcode_{counter}.png'
@@ -33,41 +35,58 @@ def generate_barcode(code_number):
 
 
 def create_template(barcode_image_path, article, name, unit):
-    """
-    Создает шаблон изображения с текстом и штрих-кодом.
-    """
-    img = Image.new("RGB", (img_width_px, img_height_px), color="#FFFFFF")
+    img = PilImage.new("RGB", (img_width_px, img_height_px), color="#FFFFFF")
     draw = ImageDraw.Draw(img)
-
     font = ImageFont.truetype(font_type, size=font_size)
 
-    text_y_offset = 10  # Отступ от верха
-
-
+    text_y_offset = 10
     text_bbox = font.getbbox(article)
     text_width = text_bbox[2] - text_bbox[0]
     center_x = (img.width - text_width) // 2
     draw.text((center_x, text_y_offset), f"{article}", fill="black", font=font)
 
-    text_bbox = font.getbbox(name)
-    text_width = text_bbox[2] - text_bbox[0]
-    center_x = (img.width - text_width) // 2
-    draw.text((center_x, text_y_offset + font_size * 1.5), f"{name}", fill="black", font=font)
+    # Логика переноса строки названия
+    lines = []
+    words = name.split()
+    current_line = ""
+    for word in words:
+        test_line = current_line + word + " "
+        bbox = font.getbbox(test_line.strip())
+        line_width = bbox[2] - bbox[0]
+        if line_width > img.width - 20:
+            lines.append(current_line.strip())
+            current_line = word + " "
+        else:
+            current_line = test_line
+    if current_line.strip():
+        lines.append(current_line.strip())
 
+    y_pos = text_y_offset + font_size * 1.5
+    for i, line in enumerate(lines[:3]):
+        text_bbox = font.getbbox(line)
+        text_width = text_bbox[2] - text_bbox[0]
+        center_x = (img.width - text_width) // 2
+        draw.text((center_x, y_pos), line, fill="black", font=font)
+        y_pos += font_size * 1.2
+
+    # Единица измерения в правом нижнем углу
     text_bbox = font.getbbox(unit)
     text_width = text_bbox[2] - text_bbox[0]
-    center_x = (img.width - text_width) // 2
-    draw.text((center_x, text_y_offset + font_size * 3), f"{unit}", fill="black", font=font)
+    text_height = text_bbox[3] - text_bbox[1]
+    right_bottom_position_x = img.width - text_width - 200
+    right_bottom_position_y = img.height - text_height - 200
+    draw.text((right_bottom_position_x, right_bottom_position_y),
+              f"{unit}",
+              fill="black",
+              font=ImageFont.truetype(font_type, size=100))
 
-    # Добавляем штрих-код снизу справа
-    bc_img = Image.open(barcode_image_path)
-    scale_factor = 0.7  # Масштабируем штрих-код, чтобы он вписался
-    new_bc_size = tuple(int(scale_factor * x) for x in bc_img.size)
-    resized_bc = bc_img.resize(new_bc_size, resample=Image.LANCZOS)
-
-    position_x = 10  # Слева с небольшим отступом
-    position_y = img.height - resized_bc.height - 10  # Снизу с небольшим отступом
-
+    # Штрих-код снизу справа
+    bc_img = PilImage.open(barcode_image_path)
+    scale_factor = 1.5
+    new_bc_size = (int(bc_img.width * scale_factor), bc_img.height)
+    resized_bc = bc_img.resize(new_bc_size, resample=PilImage.LANCZOS)
+    position_x = 20
+    position_y = img.height - resized_bc.height - 10
     img.paste(resized_bc, (position_x, position_y))
 
     template_filename = f'template_{counter}.png'
@@ -75,8 +94,40 @@ def create_template(barcode_image_path, article, name, unit):
     return template_filename
 
 
+def rotateImg(img):
+    image = PilImage.open(img)
+    rotated_image = image.rotate(90, expand=True)
+    return rotated_image
+
+
+def save_images_to_pdf(image_paths, output_pdf_path):
+    pdf_doc = SimpleDocTemplate(output_pdf_path)
+    elements = []
+
+    for path in image_paths:
+        # Получаем реальные размеры изображения
+        im_reader = ImageReader(path)
+        original_width, original_height = im_reader.getSize()
+
+        # Определяем ориентацию страницы на основе соотношения сторон изображения
+        if original_width > original_height:
+            # Горизонтальная ориентация (landscape)
+            custom_page_size = (original_width, original_height)
+        else:
+            # Вертикальная ориентация (portrait)
+            custom_page_size = (original_height, original_width)
+
+        # Добавляем изображение с его исходными размерами
+        elements.append(RlImage(path, width=original_width, height=original_height))
+
+        # Переход на новую страницу
+        elements.append(PageBreak())
+
+    # Формируем PDF-документ
+    pdf_doc.build(elements)
+
+
 def on_generate_click():
-    """Обработчик события нажатия кнопки."""
     article = entry_article.get().strip()
     name = entry_name.get().strip()
     unit = entry_unit.get().strip()
@@ -89,11 +140,51 @@ def on_generate_click():
     try:
         barcode_path = generate_barcode(code)
         template_path = create_template(barcode_path, article, name, unit)
-
+        save_images_to_pdf([template_path], 'output.pdf')  # Сохраняем в PDF сразу одну этикетку
         messagebox.showinfo('Успех!',
-                            f'Шаблон с изображением штрих-кода и информацией\nуспешно сохранён в файле:\n{template_path}')
+                            f'Шаблон с изображением штрих-кода и информацией\nуспешно сохранён в файле:\n{"output.pdf"}')
     except Exception as err:
         messagebox.showerror('Ошибка', str(err))
+
+
+def open_excel_file():
+    file_path = filedialog.askopenfilename(filetypes=[("Excel files", ".xls .xlsx")])
+    if not file_path:
+        return
+
+    df = pd.read_excel(file_path)
+
+    required_columns = ['Артикул', 'Наименование', 'Единица измерения', 'Штрихкод']
+    missing_cols = set(required_columns) - set(df.columns)
+    if len(missing_cols) > 0:
+        messagebox.showerror('Ошибка', f"В файле отсутствуют обязательные колонки: {missing_cols}")
+        return
+
+    # Добавляем в ПДФ
+    image_paths = []
+
+    for _, row in df.iterrows():
+        article = str(row['Артикул']).strip()
+        name = str(row['Наименование']).strip()
+        unit = str(row['Единица измерения']).strip()
+        code = row['Штрихкод']  #.strip()
+
+        if not all([article, name, unit, code]):
+            continue  # Пропускаем пустые строки
+
+        try:
+            barcode_path = generate_barcode(code)
+            template_path = create_template(barcode_path, article, name, unit)
+            image_paths.append(template_path)  # Собираем пути всех созданных изображений
+        except Exception as err:
+            messagebox.showerror('Ошибка', f"Произошла ошибка при обработке записи: {err}")
+
+        if image_paths:
+            save_images_to_pdf(image_paths, 'output.pdf')  # Сохраняем все этикетки в один PDF
+            # messagebox.showinfo('Готово!', 'Этикетки успешно собраны в PDF.')
+        else:
+            messagebox.showwarning('Предупреждение', 'Нет валидных записей для создания этикеток.')
+        messagebox.showinfo('Готово!', 'Этикетки успешно собраны в PDF.')
 
 
 # Интерфейс программы
@@ -118,5 +209,8 @@ entry_code.grid(row=3, column=1, padx=10, pady=5)
 
 generate_button = tk.Button(root, text="Создать этикетку", command=on_generate_click)
 generate_button.grid(row=4, columnspan=2, pady=10)
+
+open_file_button = tk.Button(root, text="Открыть файл Excel", command=open_excel_file)
+open_file_button.grid(row=5, columnspan=2, pady=10)
 
 root.mainloop()
